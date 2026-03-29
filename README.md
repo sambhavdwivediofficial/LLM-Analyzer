@@ -29,7 +29,14 @@
 </div>
 
 ---
+## Live Demo
 
+- **Space URL**: https://huggingface.co/spaces/sambhavdwivedi/LLM-Analyzer
+- **API Base**: https://sambhavdwivedi-llm-analyzer.hf.space
+- **Health Check**: https://sambhavdwivedi-llm-analyzer.hf.space/health
+- **API Docs**: https://sambhavdwivedi-llm-analyzer.hf.space/docs
+
+---
 ## Why This Environment
 
 Every AI product that generates user-facing content needs a review layer. Detecting quality failures in AI-generated text — fabricated facts, discriminatory language, harmful tone, logical contradictions — is one of the most critical and understudied problems in applied AI safety.
