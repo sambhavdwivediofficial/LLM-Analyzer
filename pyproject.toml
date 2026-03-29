@@ -3,6 +3,17 @@ name = "llm-analyzer"
 version = "1.0.0"
 description = "OpenEnv-compatible AI agent environment for LLM output quality review"
 requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.111.0",
+    "uvicorn==0.29.0",
+    "pydantic==2.7.1",
+    "requests==2.31.0",
+    "openai>=2.7.2",
+    "openenv-core>=0.2.0",
+]
+
+[project.scripts]
+server = "uvicorn app:app --host 0.0.0.0 --port 7860"
 
 [tool.openenv]
 name = "llm-output-quality-reviewer"
