@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-server = "uvicorn app:app --host 0.0.0.0 --port 7860"
+server = "server.app:main"
 
 [tool.openenv]
 name = "llm-output-quality-reviewer"
