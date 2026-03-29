@@ -1,0 +1,10 @@
+[project]
+name = "llm-analyzer"
+version = "1.0.0"
+description = "OpenEnv-compatible AI agent environment for LLM output quality review"
+requires-python = ">=3.11"
+
+[tool.openenv]
+name = "llm-output-quality-reviewer"
+version = "1.0.0"
+sdk = "docker"
