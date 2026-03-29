@@ -1,0 +1,12 @@
+# Core web framework for OpenEnv HTTP endpoints
+fastapi==0.111.0
+uvicorn==0.29.0
+
+# Data validation — Pydantic v2 for typed models
+pydantic==2.7.1
+
+# HTTP client used in inference.py to call the environment server
+requests==2.31.0
+
+# OpenAI client for LLM calls in inference.py
+openai==1.30.1
