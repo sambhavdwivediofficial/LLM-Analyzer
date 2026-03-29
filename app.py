@@ -23,7 +23,7 @@ from env import LLMQualityReviewerEnv
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="LLM Output Quality Reviewer",
+    title="LLM Analyzer Environment API",
     description=(
         "An OpenEnv-compatible environment where an AI agent reviews "
         "LLM-generated text for hallucinations, bias, toxicity, and incoherence."
