@@ -28,8 +28,7 @@ MAX_RETRIES  = 2
 # System prompt
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are an expert AI content reviewer. Your job is to review AI-generated text
-and identify quality issues.
+SYSTEM_PROMPT = """You are an expert AI content reviewer. Your job is to review AI-generated text and identify quality issues.
 
 You MUST respond with a valid JSON object and nothing else. No explanation outside the JSON.
 
@@ -73,7 +72,7 @@ def env_step(action_dict: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# LLM call + response parsing
+# LLM call — direct HTTP to bypass openai package version issues
 # ---------------------------------------------------------------------------
 
 def build_user_message(observation: dict) -> str:
@@ -93,47 +92,48 @@ def build_user_message(observation: dict) -> str:
     return "\n".join(lines)
 
 
-def call_llm(observation: dict) -> dict:
+def call_llm_direct(observation: dict) -> dict:
     """
-    Send the observation to the LLM via validator-provided API_BASE_URL and API_KEY.
-    Always makes a real API call through the validator proxy.
+    Make a direct HTTP POST to the LiteLLM proxy using requests.
+    Uses API_BASE_URL and API_KEY injected by validator.
+    This avoids any openai package version compatibility issues.
     """
     fallback = {
         "issues_found":     ["hallucination"],
-        "explanation":      "Fallback response after failed LLM calls.",
+        "explanation":      "Fallback: could not get LLM response.",
         "severity":         "medium",
         "corrected_output": None,
     }
 
-    try:
-        from openai import OpenAI
-        client       = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-        user_message = build_user_message(observation)
+    url     = f"{API_BASE_URL.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type":  "application/json",
+    }
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": build_user_message(observation)},
+        ],
+        "temperature": 0.2,
+        "max_tokens":  512,
+    }
 
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                completion = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user",   "content": user_message},
-                    ],
-                    temperature=0.2,
-                    max_tokens=512,
-                    stream=False,
-                )
-                raw_text = completion.choices[0].message.content or ""
-                clean    = raw_text.strip().strip("```json").strip("```").strip()
-                return json.loads(clean)
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            resp.raise_for_status()
+            data     = resp.json()
+            raw_text = data["choices"][0]["message"]["content"] or ""
+            clean    = raw_text.strip().strip("```json").strip("```").strip()
+            return json.loads(clean)
 
-            except (json.JSONDecodeError, KeyError) as exc:
-                print(f"[WARN] Attempt {attempt}: JSON parse failed — {exc}", flush=True)
+        except (json.JSONDecodeError, KeyError) as exc:
+            print(f"[WARN] Attempt {attempt}: parse failed — {exc}", flush=True)
 
-            except Exception as exc:
-                print(f"[WARN] Attempt {attempt}: LLM call failed — {exc}", flush=True)
-
-    except Exception as exc:
-        print(f"[WARN] OpenAI init failed — {exc}", flush=True)
+        except Exception as exc:
+            print(f"[WARN] Attempt {attempt}: LLM call failed — {exc}", flush=True)
 
     return fallback
 
@@ -156,7 +156,7 @@ def main() -> None:
     while not done:
         step_num   += 1
         task_id     = observation.get("task_id", "unknown")
-        action_dict = call_llm(observation)
+        action_dict = call_llm_direct(observation)
         result      = env_step(action_dict)
 
         reward      = result["reward"]
