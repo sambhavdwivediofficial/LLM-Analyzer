@@ -10,12 +10,9 @@ This script:
   6. Prints a final score summary for all 3 tasks.
 
 Required environment variables:
-  API_BASE_URL  — e.g. https://router.huggingface.co/v1
-  MODEL_NAME    — e.g. meta-llama/Llama-3.1-8B-Instruct
-  HF_TOKEN      — your HuggingFace API token (no default)
-
-Usage:
-  python inference.py
+  API_BASE_URL  — The API endpoint for the LLM
+  MODEL_NAME    — The model identifier to use for inference
+  HF_TOKEN      — Your HuggingFace API key
 """
 
 import json
@@ -26,16 +23,18 @@ import requests
 
 # ---------------------------------------------------------------------------
 # Configuration — read from environment variables
+# Validator injects API_BASE_URL and API_KEY — we use both
 # ---------------------------------------------------------------------------
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 HF_TOKEN     = os.getenv("HF_TOKEN")
+API_KEY      = os.getenv("API_KEY") or HF_TOKEN or "dummy-token"
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 MAX_RETRIES  = 2
 
 # ---------------------------------------------------------------------------
-# System prompt — tells the LLM exactly what format to return
+# System prompt
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are an expert AI content reviewer. Your job is to review AI-generated text
@@ -94,23 +93,20 @@ def build_user_message(observation: dict) -> str:
         "TEXT TO REVIEW:",
         observation["llm_output"],
     ]
-
     if observation.get("reference_facts"):
         lines += ["", "REFERENCE FACTS (ground truth):"]
         for fact in observation["reference_facts"]:
             lines.append(f"  - {fact}")
-
     if observation.get("previous_feedback"):
         lines += ["", f"PREVIOUS FEEDBACK: {observation['previous_feedback']}"]
-
     return "\n".join(lines)
 
 
 def call_llm(observation: dict) -> dict:
     """
     Send the observation to the LLM and parse its JSON response.
+    Uses API_BASE_URL and API_KEY as injected by the validator.
     Falls back to a safe default action if anything fails.
-    OpenAI client is imported and initialized inside to avoid global crash.
     """
     fallback = {
         "issues_found":     ["none"],
@@ -122,9 +118,7 @@ def call_llm(observation: dict) -> dict:
     try:
         from openai import OpenAI
 
-        token  = HF_TOKEN if HF_TOKEN else "dummy-token"
-        client = OpenAI(base_url=API_BASE_URL, api_key=token)
-
+        client       = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
         user_message = build_user_message(observation)
 
         for attempt in range(1, MAX_RETRIES + 1):
@@ -174,13 +168,9 @@ def main() -> None:
     step_num = 0
 
     while not done:
-        step_num  += 1
-        task_id    = observation.get("task_id", "unknown")
-
-        # Ask the LLM to review the current text
+        step_num   += 1
+        task_id     = observation.get("task_id", "unknown")
         action_dict = call_llm(observation)
-
-        # Submit the action to the environment
         result      = env_step(action_dict)
 
         reward      = result["reward"]
@@ -197,8 +187,6 @@ def main() -> None:
             f"score={score} done={done}",
             flush=True,
         )
-
-        # Detailed feedback for debugging
         print(f"[INFO] feedback={feedback[:120]}", flush=True)
 
         task_scores.append({
@@ -207,7 +195,6 @@ def main() -> None:
             "score":      score,
         })
 
-    # Final summary
     avg_score = (
         sum(t["score"] for t in task_scores) / len(task_scores)
         if task_scores else 0.0
