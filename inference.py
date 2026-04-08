@@ -1,16 +1,9 @@
 """
 inference.py — Baseline agent for LLM Output Quality Reviewer environment.
 
-This script:
-  1. Calls the environment's /reset endpoint to start an episode.
-  2. For each task, sends the observation to an LLM (via OpenAI client).
-  3. Parses the LLM's response into a structured Action.
-  4. Calls /step with the action and records the reward.
-  5. Prints structured [START], [STEP], [END] logs to stdout.
-  6. Prints a final score summary for all 3 tasks.
-
 Required environment variables:
-  API_BASE_URL  — The API endpoint for the LLM
+  API_BASE_URL  — The API endpoint for the LLM (injected by validator)
+  API_KEY       — The API key for the LLM (injected by validator)
   MODEL_NAME    — The model identifier to use for inference
   HF_TOKEN      — Your HuggingFace API key
 """
@@ -20,18 +13,20 @@ import os
 import sys
 
 import requests
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
-# Configuration — read from environment variables
-# Validator injects API_BASE_URL and API_KEY — we use both
+# Configuration — strictly using validator-injected variables
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-HF_TOKEN     = os.getenv("HF_TOKEN")
-API_KEY      = os.getenv("API_KEY") or HF_TOKEN or "dummy-token"
-ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "dummy-token")
+ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
 MAX_RETRIES  = 2
+
+# Initialize OpenAI client with validator-provided credentials
+client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -104,50 +99,41 @@ def build_user_message(observation: dict) -> str:
 
 def call_llm(observation: dict) -> dict:
     """
-    Send the observation to the LLM and parse its JSON response.
-    Uses API_BASE_URL and API_KEY as injected by the validator.
-    Falls back to a safe default action if anything fails.
+    Send the observation to the LLM via validator-provided API_BASE_URL and API_KEY.
+    Always makes a real API call through the validator proxy.
     """
-    fallback = {
-        "issues_found":     ["none"],
-        "explanation":      "Could not get a valid model response. Using fallback.",
-        "severity":         "low",
+    user_message = build_user_message(observation)
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_message},
+                ],
+                temperature=0.2,
+                max_tokens=512,
+                stream=False,
+            )
+            raw_text = completion.choices[0].message.content or ""
+            clean    = raw_text.strip().strip("```json").strip("```").strip()
+            parsed   = json.loads(clean)
+            return parsed
+
+        except (json.JSONDecodeError, KeyError) as exc:
+            print(f"[WARN] Attempt {attempt}: JSON parse failed — {exc}", flush=True)
+
+        except Exception as exc:
+            print(f"[WARN] Attempt {attempt}: LLM call failed — {exc}", flush=True)
+
+    # Fallback only if all retries failed
+    return {
+        "issues_found":     ["hallucination"],
+        "explanation":      "Fallback response after failed LLM calls.",
+        "severity":         "medium",
         "corrected_output": None,
     }
-
-    try:
-        from openai import OpenAI
-
-        client       = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-        user_message = build_user_message(observation)
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                completion = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user",   "content": user_message},
-                    ],
-                    temperature=0.2,
-                    max_tokens=512,
-                    stream=False,
-                )
-                raw_text = completion.choices[0].message.content or ""
-                clean    = raw_text.strip().strip("```json").strip("```").strip()
-                parsed   = json.loads(clean)
-                return parsed
-
-            except (json.JSONDecodeError, KeyError) as exc:
-                print(f"[WARN] Attempt {attempt}: JSON parse failed — {exc}", flush=True)
-
-            except Exception as exc:
-                print(f"[WARN] Attempt {attempt}: LLM call failed — {exc}", flush=True)
-
-    except Exception as exc:
-        print(f"[WARN] OpenAI client init failed — {exc}. Using fallback.", flush=True)
-
-    return fallback
 
 
 # ---------------------------------------------------------------------------
