@@ -13,7 +13,6 @@ import os
 import sys
 
 import requests
-from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Configuration — strictly using validator-injected variables
@@ -24,9 +23,6 @@ MODEL_NAME   = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "dummy-token")
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
 MAX_RETRIES  = 2
-
-# Initialize OpenAI client with validator-provided credentials
-client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -102,38 +98,44 @@ def call_llm(observation: dict) -> dict:
     Send the observation to the LLM via validator-provided API_BASE_URL and API_KEY.
     Always makes a real API call through the validator proxy.
     """
-    user_message = build_user_message(observation)
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            completion = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": user_message},
-                ],
-                temperature=0.2,
-                max_tokens=512,
-                stream=False,
-            )
-            raw_text = completion.choices[0].message.content or ""
-            clean    = raw_text.strip().strip("```json").strip("```").strip()
-            parsed   = json.loads(clean)
-            return parsed
-
-        except (json.JSONDecodeError, KeyError) as exc:
-            print(f"[WARN] Attempt {attempt}: JSON parse failed — {exc}", flush=True)
-
-        except Exception as exc:
-            print(f"[WARN] Attempt {attempt}: LLM call failed — {exc}", flush=True)
-
-    # Fallback only if all retries failed
-    return {
+    fallback = {
         "issues_found":     ["hallucination"],
         "explanation":      "Fallback response after failed LLM calls.",
         "severity":         "medium",
         "corrected_output": None,
     }
+
+    try:
+        from openai import OpenAI
+        client       = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        user_message = build_user_message(observation)
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                completion = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user",   "content": user_message},
+                    ],
+                    temperature=0.2,
+                    max_tokens=512,
+                    stream=False,
+                )
+                raw_text = completion.choices[0].message.content or ""
+                clean    = raw_text.strip().strip("```json").strip("```").strip()
+                return json.loads(clean)
+
+            except (json.JSONDecodeError, KeyError) as exc:
+                print(f"[WARN] Attempt {attempt}: JSON parse failed — {exc}", flush=True)
+
+            except Exception as exc:
+                print(f"[WARN] Attempt {attempt}: LLM call failed — {exc}", flush=True)
+
+    except Exception as exc:
+        print(f"[WARN] OpenAI init failed — {exc}", flush=True)
+
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -142,11 +144,9 @@ def call_llm(observation: dict) -> dict:
 
 def main() -> None:
 
-    # Start a new episode
     observation = env_reset()
     episode_id  = observation.get("task_id", "episode_1")
 
-    # [START] log — required by validator
     print(f"[START] task={episode_id} model={MODEL_NAME} env={ENV_BASE_URL}", flush=True)
 
     task_scores: list[dict] = []
@@ -167,7 +167,6 @@ def main() -> None:
         difficulty  = info.get("task_difficulty", "unknown")
         feedback    = reward.get("feedback", "")
 
-        # [STEP] log — required by validator
         print(
             f"[STEP] step={step_num} task={task_id} difficulty={difficulty} "
             f"score={score} done={done}",
@@ -186,13 +185,11 @@ def main() -> None:
         if task_scores else 0.0
     )
 
-    # [END] log — required by validator
     print(
         f"[END] task={episode_id} score={round(avg_score, 3)} steps={step_num}",
         flush=True,
     )
 
-    # Human-readable summary
     print("\n" + "=" * 60, flush=True)
     print("  FINAL RESULTS", flush=True)
     print("=" * 60, flush=True)
