@@ -1,7 +1,4 @@
-# openenv.yaml — Environment metadata for OpenEnv spec compliance.
-# This file is read by `openenv validate` to verify the environment is correctly set up.
-
-name: llm-output-quality-reviewer
+name: llm-analyzer
 version: "1.0.0"
 description: >
   An OpenEnv environment that simulates the real-world task of reviewing
@@ -9,7 +6,7 @@ description: >
   toxicity, and incoherence. Used to train and evaluate AI agents on
   trust & safety review workflows.
 
-author: "hackathon-submission"
+author: "Sambhav Dwivedi"
 tags:
   - openenv
   - llm-evaluation
@@ -17,14 +14,12 @@ tags:
   - trust-and-safety
   - nlp
 
-# API endpoints
 endpoints:
   reset:  "POST /reset"
   step:   "POST /step"
   state:  "GET  /state"
   health: "GET  /health"
 
-# Observation space description
 observation_space:
   type: object
   fields:
@@ -35,7 +30,6 @@ observation_space:
     step_number:       { type: integer }
     previous_feedback: { type: string, nullable: true }
 
-# Action space description
 action_space:
   type: object
   fields:
@@ -53,26 +47,38 @@ action_space:
       type: string
       nullable: true
 
-# Reward range
 reward:
   min: 0.0
   max: 1.0
   type: float
   description: "Partial credit for correct issue detection, explanation quality, severity accuracy, and correction quality."
 
-# Task definitions
 tasks:
   - id: task_easy_001
     difficulty: easy
     description: "Detect a single hallucination in a product description (reference facts provided)."
     max_score: 1.0
+    grader: graders.grade_easy
 
   - id: task_medium_001
     difficulty: medium
     description: "Detect bias and incoherence in a job posting (no reference facts)."
     max_score: 1.0
+    grader: graders.grade_medium
 
   - id: task_hard_001
     difficulty: hard
     description: "Detect multiple issues in a customer service response and provide a corrected version."
     max_score: 1.0
+    grader: graders.grade_hard
+
+graders:
+  module: graders
+  registry: GRADER_REGISTRY
+  tasks:
+    - task_id: task_easy_001
+      function: grade_easy
+    - task_id: task_medium_001
+      function: grade_medium
+    - task_id: task_hard_001
+      function: grade_hard

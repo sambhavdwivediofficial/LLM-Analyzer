@@ -1,25 +1,33 @@
 """
-inference.py — Baseline agent for LLM Output Quality Reviewer environment.
+inference.py — Agent for LLM Output Quality Reviewer environment.
 
-Required environment variables:
-  API_BASE_URL  — The API endpoint for the LLM (injected by validator)
-  API_KEY       — The API key for the LLM (injected by validator)
-  MODEL_NAME    — The model identifier to use for inference
-  HF_TOKEN      — Your HuggingFace API key
+Environment variables (injected by validator):
+  API_BASE_URL  — LLM API endpoint
+  API_KEY       — LLM API key
+  MODEL_NAME    — Model identifier
+  HF_TOKEN      — HuggingFace API key (fallback for API_KEY)
+  ENV_BASE_URL  — Environment server base URL (default: http://localhost:7860)
 """
 
 import json
 import os
 import sys
-
 import requests
 
+# ---------------------------------------------------------------------------
 # Configuration
+# ---------------------------------------------------------------------------
+
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-API_KEY = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "dummy-token")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "dummy-token")
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
-MAX_RETRIES = 2
+MAX_RETRIES  = 2
+SUCCESS_THRESHOLD = 0.5
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are an expert AI content reviewer. Your job is to review AI-generated text and identify quality issues.
 
@@ -33,35 +41,52 @@ The JSON must have exactly these fields:
   "corrected_output": "a corrected version of the text, or null if not needed"
 }"""
 
+# ---------------------------------------------------------------------------
+# Stdout logging — strict validator format
+# ---------------------------------------------------------------------------
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: str | None) -> None:
+    # Sanitize action string — no newlines allowed on a single line
+    action_clean = action.replace("\n", " ").replace("\r", "")[:120]
+    error_val    = error if error else "null"
+    done_val     = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action_clean} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: list[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
+
+# ---------------------------------------------------------------------------
+# Environment HTTP helpers
+# ---------------------------------------------------------------------------
 
 def env_reset() -> dict:
-    """Start a new episode with the environment server."""
-    try:
-        resp = requests.post(f"{ENV_BASE_URL}/reset", timeout=30)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        print(f"[ERROR] env_reset failed: {e}", flush=True)
-        sys.exit(1)
+    resp = requests.post(f"{ENV_BASE_URL}/reset", timeout=30)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def env_step(action_dict: dict) -> dict:
-    """Submit action to environment server."""
-    try:
-        resp = requests.post(
-            f"{ENV_BASE_URL}/step",
-            json=action_dict,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        print(f"[ERROR] env_step failed: {e}", flush=True)
-        sys.exit(1)
+    resp = requests.post(f"{ENV_BASE_URL}/step", json=action_dict, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
 
+# ---------------------------------------------------------------------------
+# LLM call
+# ---------------------------------------------------------------------------
 
 def build_user_message(observation: dict) -> str:
-    """Build the user prompt from observation."""
     lines = [
         f"TASK: {observation['task_description']}",
         "",
@@ -77,93 +102,97 @@ def build_user_message(observation: dict) -> str:
     return "\n".join(lines)
 
 
-def call_llm_direct(observation: dict) -> dict:
-    """Make HTTP request to LLM API."""
+def call_llm(observation: dict) -> dict:
     fallback = {
-        "issues_found": ["hallucination"],
-        "explanation": "Fallback: could not get LLM response.",
-        "severity": "medium",
+        "issues_found":     ["hallucination"],
+        "explanation":      "Fallback response: LLM call failed.",
+        "severity":         "medium",
         "corrected_output": None,
     }
 
-    url = f"{API_BASE_URL.rstrip('/')}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-    }
+    url     = f"{API_BASE_URL.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": MODEL_NAME,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_message(observation)},
+            {"role": "user",   "content": build_user_message(observation)},
         ],
         "temperature": 0.2,
-        "max_tokens": 512,
+        "max_tokens":  512,
     }
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            resp     = requests.post(url, headers=headers, json=payload, timeout=60)
             resp.raise_for_status()
-            data = resp.json()
+            data     = resp.json()
             raw_text = data["choices"][0]["message"]["content"] or ""
-            clean = raw_text.strip().strip("```json").strip("```").strip()
+            clean    = raw_text.strip().strip("```json").strip("```").strip()
             return json.loads(clean)
         except (json.JSONDecodeError, KeyError) as exc:
-            print(f"[WARN] Attempt {attempt}: parse failed — {exc}", flush=True)
+            print(f"[DEBUG] Attempt {attempt}: parse error — {exc}", flush=True)
         except Exception as exc:
-            print(f"[WARN] Attempt {attempt}: LLM call failed — {exc}", flush=True)
+            print(f"[DEBUG] Attempt {attempt}: LLM call failed — {exc}", flush=True)
 
     return fallback
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Main inference loop."""
-    observation = env_reset()
-    
-    print(f"[START] tasks=3 model={MODEL_NAME}", flush=True)
+    rewards:     list[float] = []
+    step_num:    int         = 0
+    done:        bool        = False
+    observation: dict        = {}
 
-    task_scores: list[dict] = []
-    done = False
-    step_num = 0
+    try:
+        observation = env_reset()
+    except Exception as exc:
+        print(f"[DEBUG] env_reset failed: {exc}", flush=True)
+        log_start(task="llm-quality-reviewer", env="llm-quality-reviewer", model=MODEL_NAME)
+        log_end(success=False, steps=0, score=0.0, rewards=[])
+        sys.exit(1)
+
+    episode_task = observation.get("task_id", "llm-quality-reviewer")
+    log_start(task=episode_task, env="llm-quality-reviewer", model=MODEL_NAME)
 
     while not done:
         step_num += 1
-        task_id = observation.get("task_id", "unknown")
-        
-        action_dict = call_llm_direct(observation)
-        result = env_step(action_dict)
+        task_id   = observation.get("task_id", "unknown")
 
-        reward = result["reward"]
-        done = result["done"]
-        info = result["info"]
+        action_dict = call_llm(observation)
+
+        try:
+            result = env_step(action_dict)
+        except Exception as exc:
+            print(f"[DEBUG] env_step failed: {exc}", flush=True)
+            log_step(step=step_num, action=str(action_dict), reward=0.0, done=True, error=str(exc))
+            rewards.append(0.0)
+            break
+
+        reward_obj  = result["reward"]
+        done        = result["done"]
         observation = result["observation"]
-        score = reward["total"]
-        difficulty = info.get("task_difficulty", "unknown")
+        score       = float(reward_obj["total"])
+        error_msg   = reward_obj.get("feedback", None)
 
-        done_str = "true" if done else "false"
-        print(
-            f"[STEP] step={step_num} task={task_id} difficulty={difficulty} "
-            f"score={score:.3f} done={done_str}",
-            flush=True,
+        rewards.append(score)
+        action_label = f"review(task={task_id},issues={action_dict.get('issues_found',[])})"
+
+        log_step(
+            step   = step_num,
+            action = action_label,
+            reward = score,
+            done   = done,
+            error  = None,
         )
 
-        task_scores.append({
-            "task_id": task_id,
-            "difficulty": difficulty,
-            "score": score,
-        })
+    avg_score = sum(rewards) / len(rewards) if rewards else 0.0
+    success   = avg_score >= SUCCESS_THRESHOLD
 
-    avg_score = (
-        sum(t["score"] for t in task_scores) / len(task_scores)
-        if task_scores else 0.0
-    )
-
-    print(
-        f"[END] tasks_completed={len(task_scores)} avg_score={avg_score:.3f} "
-        f"steps={step_num}",
-        flush=True,
-    )
+    log_end(success=success, steps=step_num, score=avg_score, rewards=rewards)
 
 
 if __name__ == "__main__":
