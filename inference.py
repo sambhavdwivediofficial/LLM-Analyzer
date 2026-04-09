@@ -14,19 +14,12 @@ import sys
 
 import requests
 
-# ---------------------------------------------------------------------------
-# Configuration — strictly using validator-injected variables
-# ---------------------------------------------------------------------------
-
+# Configuration
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "dummy-token")
+MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+API_KEY = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "dummy-token")
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
-MAX_RETRIES  = 2
-
-# ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
+MAX_RETRIES = 2
 
 SYSTEM_PROMPT = """You are an expert AI content reviewer. Your job is to review AI-generated text and identify quality issues.
 
@@ -41,12 +34,8 @@ The JSON must have exactly these fields:
 }"""
 
 
-# ---------------------------------------------------------------------------
-# Environment HTTP helpers
-# ---------------------------------------------------------------------------
-
 def env_reset() -> dict:
-    """Call /reset on the environment server to start a new episode."""
+    """Start a new episode with the environment server."""
     try:
         resp = requests.post(f"{ENV_BASE_URL}/reset", timeout=30)
         resp.raise_for_status()
@@ -57,7 +46,7 @@ def env_reset() -> dict:
 
 
 def env_step(action_dict: dict) -> dict:
-    """Call /step with the agent's action and return the result."""
+    """Submit action to environment server."""
     try:
         resp = requests.post(
             f"{ENV_BASE_URL}/step",
@@ -71,12 +60,8 @@ def env_step(action_dict: dict) -> dict:
         sys.exit(1)
 
 
-# ---------------------------------------------------------------------------
-# LLM call — direct HTTP to bypass openai package version issues
-# ---------------------------------------------------------------------------
-
 def build_user_message(observation: dict) -> str:
-    """Turn an observation dict into a plain-text prompt for the LLM."""
+    """Build the user prompt from observation."""
     lines = [
         f"TASK: {observation['task_description']}",
         "",
@@ -93,91 +78,80 @@ def build_user_message(observation: dict) -> str:
 
 
 def call_llm_direct(observation: dict) -> dict:
-    """
-    Make a direct HTTP POST to the LiteLLM proxy using requests.
-    Uses API_BASE_URL and API_KEY injected by validator.
-    This avoids any openai package version compatibility issues.
-    """
+    """Make HTTP request to LLM API."""
     fallback = {
-        "issues_found":     ["hallucination"],
-        "explanation":      "Fallback: could not get LLM response.",
-        "severity":         "medium",
+        "issues_found": ["hallucination"],
+        "explanation": "Fallback: could not get LLM response.",
+        "severity": "medium",
         "corrected_output": None,
     }
 
-    url     = f"{API_BASE_URL.rstrip('/')}/chat/completions"
+    url = f"{API_BASE_URL.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {API_KEY}",
-        "Content-Type":  "application/json",
+        "Content-Type": "application/json",
     }
     payload = {
         "model": MODEL_NAME,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": build_user_message(observation)},
+            {"role": "user", "content": build_user_message(observation)},
         ],
         "temperature": 0.2,
-        "max_tokens":  512,
+        "max_tokens": 512,
     }
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=60)
             resp.raise_for_status()
-            data     = resp.json()
+            data = resp.json()
             raw_text = data["choices"][0]["message"]["content"] or ""
-            clean    = raw_text.strip().strip("```json").strip("```").strip()
+            clean = raw_text.strip().strip("```json").strip("```").strip()
             return json.loads(clean)
-
         except (json.JSONDecodeError, KeyError) as exc:
             print(f"[WARN] Attempt {attempt}: parse failed — {exc}", flush=True)
-
         except Exception as exc:
             print(f"[WARN] Attempt {attempt}: LLM call failed — {exc}", flush=True)
 
     return fallback
 
 
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
-
 def main() -> None:
-
+    """Main inference loop."""
     observation = env_reset()
-    episode_id  = observation.get("task_id", "episode_1")
-
-    print(f"[START] task={episode_id} model={MODEL_NAME} env={ENV_BASE_URL}", flush=True)
+    
+    print(f"[START] tasks=3 model={MODEL_NAME}", flush=True)
 
     task_scores: list[dict] = []
-    done     = False
+    done = False
     step_num = 0
 
     while not done:
-        step_num   += 1
-        task_id     = observation.get("task_id", "unknown")
+        step_num += 1
+        task_id = observation.get("task_id", "unknown")
+        
         action_dict = call_llm_direct(observation)
-        result      = env_step(action_dict)
+        result = env_step(action_dict)
 
-        reward      = result["reward"]
-        done        = result["done"]
-        info        = result["info"]
+        reward = result["reward"]
+        done = result["done"]
+        info = result["info"]
         observation = result["observation"]
-        score       = reward["total"]
-        difficulty  = info.get("task_difficulty", "unknown")
-        feedback    = reward.get("feedback", "")
+        score = reward["total"]
+        difficulty = info.get("task_difficulty", "unknown")
 
+        done_str = "true" if done else "false"
         print(
             f"[STEP] step={step_num} task={task_id} difficulty={difficulty} "
-            f"score={score} done={done}",
+            f"score={score:.3f} done={done_str}",
             flush=True,
         )
-        print(f"[INFO] feedback={feedback[:120]}", flush=True)
 
         task_scores.append({
-            "task_id":    task_id,
+            "task_id": task_id,
             "difficulty": difficulty,
-            "score":      score,
+            "score": score,
         })
 
     avg_score = (
@@ -186,20 +160,10 @@ def main() -> None:
     )
 
     print(
-        f"[END] task={episode_id} score={round(avg_score, 3)} steps={step_num}",
+        f"[END] tasks_completed={len(task_scores)} avg_score={avg_score:.3f} "
+        f"steps={step_num}",
         flush=True,
     )
-
-    print("\n" + "=" * 60, flush=True)
-    print("  FINAL RESULTS", flush=True)
-    print("=" * 60, flush=True)
-    for entry in task_scores:
-        print(
-            f"  [{entry['difficulty'].upper():6}] {entry['task_id']}: {entry['score']:.3f}",
-            flush=True,
-        )
-    print(f"\n  Average score: {avg_score:.3f}", flush=True)
-    print("=" * 60, flush=True)
 
 
 if __name__ == "__main__":
