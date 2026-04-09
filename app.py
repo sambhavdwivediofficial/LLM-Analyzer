@@ -50,7 +50,7 @@ _env = LLMQualityReviewerEnv()
 @app.get("/health")
 def health_check() -> dict:
     """Liveness probe — returns 200 if the server is running."""
-    return {"status": "ok", "environment": "LLMQualityReviewer", "version": "1.0.0"}
+    return {"status": "ok", "environment": "LLM-Analyzer", "version": "1.0.0"}
 
 
 @app.post("/reset", response_model=Observation)
